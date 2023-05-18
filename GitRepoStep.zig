@@ -22,7 +22,7 @@ pub const ShaCheck = enum {
 };
 
 step: std.build.Step,
-builder: *std.build.Builder,
+builder: *std.Build,
 url: []const u8,
 name: []const u8,
 branch: ?[]const u8 = null,
@@ -50,14 +50,18 @@ pub fn create(b: *std.build.Builder, opt: struct {
     var result = b.allocator.create(GitRepoStep) catch @panic("memory");
     const name = std.fs.path.basename(opt.url);
     result.* = GitRepoStep{
-        .step = std.build.Step.init(.custom, "clone a git repository", b.allocator, make),
+        .step = std.build.Step.init(.{
+            .id = .custom,
+            .name = "clone a git repository",
+            .owner = b,
+            .makeFn = make,
+        }),
         .builder = b,
         .url = opt.url,
         .name = name,
         .branch = opt.branch,
         .sha = opt.sha,
-        .path = if (opt.path) |p| b.allocator.dupe(u8, p) catch @panic("OOM")
-            else b.pathFromRoot(b.pathJoin(&.{"dep", name})),
+        .path = if (opt.path) |p| b.allocator.dupe(u8, p) catch @panic("OOM") else b.pathFromRoot(b.pathJoin(&.{ "dep", name })),
         .sha_check = opt.sha_check,
         .fetch_enabled = if (opt.fetch_enabled) |fe| fe else defaultFetchOption(b),
     };
@@ -76,7 +80,8 @@ fn hasDependency(step: *const std.build.Step, dep_candidate: *const std.build.St
     return false;
 }
 
-fn make(step: *std.build.Step) !void {
+fn make(step: *std.build.Step, prog_node: *std.Progress.Node) !void {
+    _ = prog_node;
     const self = @fieldParentPtr(GitRepoStep, "step", step);
 
     std.fs.accessAbsolute(self.path, .{}) catch {

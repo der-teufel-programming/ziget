@@ -27,8 +27,8 @@ pub fn build(b: *Builder) !void {
 
     // by default, install the std ssl backend
     const default_exe = ssl_exes[@enumToInt(SslBackend.std)];
-    b.getInstallStep().dependOn(&default_exe.install_step.?.step);
-    const run_cmd = default_exe.run();
+    b.installArtifact(default_exe);
+    const run_cmd = b.addRunArtifact(default_exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -41,13 +41,11 @@ fn getEnabledByDefault(optional_ssl_backend: ?SslBackend, is_ci: bool) bool {
     return if (optional_ssl_backend) |backend| switch (backend) {
         .std => true,
         .schannel => false, // schannel not supported yet
-        .opensslstatic => (
-               builtin.os.tag == .linux
-            // or builtin.os.tag == .macos (not working yet, I think config is not working)
+        .opensslstatic => (builtin.os.tag == .linux
+        // or builtin.os.tag == .macos (not working yet, I think config is not working)
         ),
-        .openssl => (
-            (builtin.os.tag == .linux and !is_ci) // zig is having trouble with the openssh headers on the CI
-            // or builtin.os.tag == .macos (not working yet, not sure why)
+        .openssl => ((builtin.os.tag == .linux and !is_ci) // zig is having trouble with the openssh headers on the CI
+        // or builtin.os.tag == .macos (not working yet, not sure why)
         ),
     } else true;
 }
@@ -85,9 +83,7 @@ fn addExe(
     b.step(info.name, b.fmt("Build ziget with the {s} backend{s}", .{
         info.name,
         abled_suffix,
-    })).dependOn(
-        &install.step
-    );
+    })).dependOn(&install.step);
     return exe;
 }
 
@@ -101,31 +97,28 @@ fn addTest(
 ) void {
     const enabled_by_default = getEnabledByDefault(optional_ssl_backend, is_ci);
     const abled_suffix: []const u8 = if (enabled_by_default) "" else " (DISABLED BY DEFAULT)";
-    const test_backend_step = b.step(
-        "test-" ++ backend_name,
-        b.fmt("Test the {s} backend{s}", .{backend_name, abled_suffix})
-    );
+    const test_backend_step = b.step("test-" ++ backend_name, b.fmt("Test the {s} backend{s}", .{ backend_name, abled_suffix }));
     {
-        const run = exe.run();
+        const run = b.addRunArtifact(exe);
         run.addArg("http://google.com");
         loggyrunstep.enable(run);
         test_backend_step.dependOn(&run.step);
     }
     if (optional_ssl_backend) |_| {
         {
-            const run = exe.run();
+            const run = b.addRunArtifact(exe);
             run.addArg("http://ziglang.org"); // NOTE: ziglang.org will redirect to HTTPS
             loggyrunstep.enable(run);
             test_backend_step.dependOn(&run.step);
         }
         {
-            const run = exe.run();
+            const run = b.addRunArtifact(exe);
             run.addArg("https://ziglang.org");
             loggyrunstep.enable(run);
             test_backend_step.dependOn(&run.step);
         }
     } else {
-        const run = exe.run();
+        const run = b.addRunArtifact(exe);
         run.addArg("google.com");
         loggyrunstep.enable(run);
         test_backend_step.dependOn(&run.step);
@@ -147,27 +140,26 @@ pub const ssl_backends = @typeInfo(SslBackend).Enum.fields;
 ///! This function will add the necessary include directories, libraries, etc to be able to
 ///! include ziget and it's SSL backend dependencies into the given compile.
 pub fn addZigetModule(
-    compile: *std.build.CompileStep,
+    compile: *std.Build.Step.Compile,
     optional_ssl_backend: ?SslBackend,
     ziget_repo: []const u8,
 ) void {
-    const b = compile.builder;
-    const ziget_index = std.fs.path.join(b.allocator, &[_][]const u8 { ziget_repo, "ziget.zig" }) catch unreachable;
-    const ssl_module = if (optional_ssl_backend) |backend| addSslBackend(compile, backend, ziget_repo)
-        else b.createModule(.{ .source_file = .{ .path = "nossl/ssl.zig" } });
+    const b = compile.step.owner;
+    const ziget_index = std.fs.path.join(b.allocator, &[_][]const u8{ ziget_repo, "ziget.zig" }) catch unreachable;
+    const ssl_module = if (optional_ssl_backend) |backend| addSslBackend(compile, backend, ziget_repo) else b.createModule(.{ .source_file = .{ .path = "nossl/ssl.zig" } });
     compile.addAnonymousModule("ziget", .{
         .source_file = .{ .path = ziget_index },
-        .dependencies = &[_]std.Build.ModuleDependency {
+        .dependencies = &[_]std.Build.ModuleDependency{
             .{ .name = "ssl", .module = ssl_module },
         },
     });
 }
 
-fn addSslBackend(compile: *std.build.CompileStep, backend: SslBackend, ziget_repo: []const u8) *Module {
-    const b = compile.builder;
+fn addSslBackend(compile: *std.Build.CompileStep, backend: SslBackend, ziget_repo: []const u8) *Module {
+    const b = compile.step.owner;
     switch (backend) {
         .std => return b.createModule(.{
-            .source_file = .{ .path = std.fs.path.join(b.allocator, &[_][]const u8 { ziget_repo, "stdssl.zig" }) catch unreachable },
+            .source_file = .{ .path = std.fs.path.join(b.allocator, &[_][]const u8{ ziget_repo, "stdssl.zig" }) catch unreachable },
         }),
         .openssl => {
             compile.linkSystemLibrary("c");
@@ -179,9 +171,7 @@ fn addSslBackend(compile: *std.build.CompileStep, backend: SslBackend, ziget_rep
                 compile.linkSystemLibrary("crypto");
                 compile.linkSystemLibrary("ssl");
             }
-            return b.createModule(.{
-                .source_file = .{ .path = std.fs.path.join(b.allocator, &[_][]const u8 { ziget_repo, "openssl", "ssl.zig" }) catch unreachable}
-            });
+            return b.createModule(.{ .source_file = .{ .path = std.fs.path.join(b.allocator, &[_][]const u8{ ziget_repo, "openssl", "ssl.zig" }) catch unreachable } });
         },
         .opensslstatic => {
             const openssl_repo = GitRepoStep.create(b, .{
@@ -196,7 +186,7 @@ fn addSslBackend(compile: *std.build.CompileStep, backend: SslBackend, ziget_rep
                 const configure_openssl = std.build.RunStep.create(b, "configure openssl");
                 configure_openssl.step.dependOn(&openssl_repo.step);
                 configure_openssl.cwd = openssl_repo.getPath(&configure_openssl.step);
-                configure_openssl.addArgs(&[_][]const u8 {
+                configure_openssl.addArgs(&[_][]const u8{
                     "./config",
                     // just a temporary path for now
                     //"--openssl",
@@ -226,12 +216,12 @@ fn addSslBackend(compile: *std.build.CompileStep, backend: SslBackend, ziget_rep
                     "no-sm3",
                     "no-sm4",
                 });
-                configure_openssl.stdout_action = .{
-                    .expect_matches = &[_][]const u8 { "OpenSSL has been successfully configured" },
-                };
+                var checks = std.ArrayList(std.Build.Step.Run.StdIo.Check).init(b.allocator);
+                checks.append(.{ .expect_stdout_exact = "OpenSSL has been successfully configured" }) catch unreachable;
+                configure_openssl.stdio = .{ .check = checks };
                 const make_openssl = std.build.RunStep.create(b, "configure openssl");
                 make_openssl.cwd = configure_openssl.cwd;
-                make_openssl.addArgs(&[_][]const u8 {
+                make_openssl.addArgs(&[_][]const u8{
                     "make",
                     "include/openssl/opensslconf.h",
                     "include/crypto/bn_conf.h",
@@ -243,11 +233,9 @@ fn addSslBackend(compile: *std.build.CompileStep, backend: SslBackend, ziget_rep
 
             const openssl_repo_path_for_step = openssl_repo.getPath(&compile.step);
             compile.addIncludePath(openssl_repo_path_for_step);
-            compile.addIncludePath(std.fs.path.join(b.allocator, &[_][]const u8 {
-                openssl_repo_path_for_step, "include" }) catch unreachable);
-            compile.addIncludePath(std.fs.path.join(b.allocator, &[_][]const u8 {
-                openssl_repo_path_for_step, "crypto", "modes" }) catch unreachable);
-            const cflags = &[_][]const u8 {
+            compile.addIncludePath(std.fs.path.join(b.allocator, &[_][]const u8{ openssl_repo_path_for_step, "include" }) catch unreachable);
+            compile.addIncludePath(std.fs.path.join(b.allocator, &[_][]const u8{ openssl_repo_path_for_step, "crypto", "modes" }) catch unreachable);
+            const cflags = &[_][]const u8{
                 "-Wall",
                 // TODO: is this the right way to do this? is it a config option?
                 "-DOPENSSL_NO_ENGINE",
@@ -259,13 +247,12 @@ fn addSslBackend(compile: *std.build.CompileStep, backend: SslBackend, ziget_rep
                 var source_lines = std.mem.split(u8, sources, "\n");
                 while (source_lines.next()) |src| {
                     if (src.len == 0 or src[0] == '#') continue;
-                    compile.addCSourceFile(std.fs.path.join(b.allocator, &[_][]const u8 {
-                        openssl_repo_path_for_step, src }) catch unreachable, cflags);
+                    compile.addCSourceFile(std.fs.path.join(b.allocator, &[_][]const u8{ openssl_repo_path_for_step, src }) catch unreachable, cflags);
                 }
             }
             compile.linkLibC();
             return b.createModule(.{
-                .source_file = .{ .path = std.fs.path.join(b.allocator, &[_][]const u8 { ziget_repo, "openssl", "ssl.zig" }) catch unreachable},
+                .source_file = .{ .path = std.fs.path.join(b.allocator, &[_][]const u8{ ziget_repo, "openssl", "ssl.zig" }) catch unreachable },
             });
         },
         .schannel => {
@@ -274,18 +261,14 @@ fn addSslBackend(compile: *std.build.CompileStep, backend: SslBackend, ziget_rep
                 //       I'll probably port this to Zig at some point
                 //       Once I do remove this build config
                 // NOTE: I tested using this commit: 7338760a4a2c6fb80c47b24a2abba32d5fc40635 tagged at version 0.1.42
-                const msspi_repo = GitRepoStep.create(b, .{
-                    .url = "https://github.com/deemru/msspi",
-                    .branch = "0.1.42",
-                    .sha = "7338760a4a2c6fb80c47b24a2abba32d5fc40635"
-                });
+                const msspi_repo = GitRepoStep.create(b, .{ .url = "https://github.com/deemru/msspi", .branch = "0.1.42", .sha = "7338760a4a2c6fb80c47b24a2abba32d5fc40635" });
                 compile.step.dependOn(&msspi_repo.step);
                 const msspi_repo_path = msspi_repo.getPath(&compile.step);
 
-                const msspi_src_dir = std.fs.path.join(b.allocator, &[_][]const u8 { msspi_repo_path, "src" }) catch unreachable;
-                const msspi_main_cpp = std.fs.path.join(b.allocator, &[_][]const u8 { msspi_src_dir, "msspi.cpp" }) catch unreachable;
-                const msspi_third_party_include = std.fs.path.join(b.allocator, &[_][]const u8 { msspi_repo_path, "third_party", "cprocsp", "include" }) catch unreachable;
-                compile.addCSourceFile(msspi_main_cpp, &[_][]const u8 { });
+                const msspi_src_dir = std.fs.path.join(b.allocator, &[_][]const u8{ msspi_repo_path, "src" }) catch unreachable;
+                const msspi_main_cpp = std.fs.path.join(b.allocator, &[_][]const u8{ msspi_src_dir, "msspi.cpp" }) catch unreachable;
+                const msspi_third_party_include = std.fs.path.join(b.allocator, &[_][]const u8{ msspi_repo_path, "third_party", "cprocsp", "include" }) catch unreachable;
+                compile.addCSourceFile(msspi_main_cpp, &[_][]const u8{});
                 compile.addIncludePath(msspi_src_dir);
                 compile.addIncludePath(msspi_third_party_include);
                 compile.linkLibC();
@@ -298,12 +281,12 @@ fn addSslBackend(compile: *std.build.CompileStep, backend: SslBackend, ziget_rep
             //    "https://github.com/marlersoft/zigwin32",
             //    "src" ++ std.fs.path.sep_str ++ "win32.zig");
             return b.createModule(.{
-                .source_file = .{ .path = std.fs.path.join(b.allocator, &[_][]const u8 { ziget_repo, "schannel", "ssl.zig" }) catch unreachable },
+                .source_file = .{ .path = std.fs.path.join(b.allocator, &[_][]const u8{ ziget_repo, "schannel", "ssl.zig" }) catch unreachable },
                 //.dependencies = &[_]Module {
                 //    .{ .name = "win32", .source = .{ .path = zigwin32_index_file } },
                 //},
             });
-        }
+        },
     }
 }
 
@@ -324,30 +307,27 @@ const OpensslPathOption = struct {
         return self.cached;
     }
 };
-var global_openssl_path_option = OpensslPathOption { };
+var global_openssl_path_option = OpensslPathOption{};
 
 pub fn setupOpensslWindows(compile: *std.build.CompileStep) void {
     const b = compile.builder;
 
     const openssl_path = global_openssl_path_option.get(b) orelse {
-        compile.step.dependOn(&FailStep.create(b, "missing openssl-path",
-            "-Dopenssl on windows requires -Dopenssl-path=DIR to be specified").step);
+        compile.step.dependOn(&FailStep.create(b, "missing openssl-path", "-Dopenssl on windows requires -Dopenssl-path=DIR to be specified").step);
         return;
     };
     // NOTE: right now these files are hardcoded to the files expected when installing SSL via
     //       this web page: https://slproweb.com/products/Win32OpenSSL.html and installed using
     //       this exe installer: https://slproweb.com/download/Win64OpenSSL-1_1_1g.exe
-    compile.addIncludePath(std.fs.path.join(b.allocator, &[_][]const u8 {openssl_path, "include"}) catch unreachable);
-    compile.addLibraryPath(std.fs.path.join(b.allocator, &[_][]const u8 {openssl_path, "lib"}) catch unreachable);
+    compile.addIncludePath(std.fs.path.join(b.allocator, &[_][]const u8{ openssl_path, "include" }) catch unreachable);
+    compile.addLibraryPath(std.fs.path.join(b.allocator, &[_][]const u8{ openssl_path, "lib" }) catch unreachable);
     // install dlls to the same directory as executable
-    for ([_][]const u8 {"libcrypto-1_1-x64.dll", "libssl-1_1-x64.dll"}) |dll| {
-        compile.step.dependOn(
-            &b.addInstallFileWithDir(
-                .{ .path = std.fs.path.join(b.allocator, &[_][]const u8 {openssl_path, dll}) catch unreachable },
-                .bin,
-                dll,
-            ).step
-        );
+    for ([_][]const u8{ "libcrypto-1_1-x64.dll", "libssl-1_1-x64.dll" }) |dll| {
+        compile.step.dependOn(&b.addInstallFileWithDir(
+            .{ .path = std.fs.path.join(b.allocator, &[_][]const u8{ openssl_path, dll }) catch unreachable },
+            .bin,
+            dll,
+        ).step);
     }
 }
 
